@@ -3558,7 +3558,7 @@ function confirm2(title, msg, onYes) {
 // ── Navigation ────────────────────────────────────────────────
 const PAGES = ['pg-today','pg-home','pg-daily','pg-aqsat','pg-bore','pg-br-detail','pg-qorod','pg-qr-detail','pg-doyon','pg-dy-detail','pg-reports','pg-overview','pg-recurring','pg-calc','pg-settings'];
 
-const _DETAIL_PAGES = new Set(['pg-aq-detail','pg-qr-detail','pg-dy-detail','pg-br-detail']);
+const _DETAIL_PAGES = new Set(['pg-aq-detail','pg-qr-detail','pg-dy-detail','pg-br-detail','pg-client-profile']);
 function nav(id) {
   closeFab();
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
@@ -3935,7 +3935,7 @@ function homePaidTab(tab) {
     } else {
       lateList.forEach(c => {
         const initials = c.name.trim().split(/\s+/).map(w=>w[0]).join('').slice(0,2);
-        html += `<div style="display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--border);cursor:pointer" onclick="openClientProfile(this.dataset.n)" data-n="${c.name}">
+        html += `<div style="display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--border);cursor:pointer" onclick="openClientProfilePage(this.dataset.n)" data-n="${c.name}">
           <div style="width:28px;height:28px;border-radius:8px;background:var(--rbg);display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;color:var(--red);flex-shrink:0">${initials}</div>
           <div style="flex:1;text-align:right">
             <div style="font-size:11px;font-weight:600;color:var(--text)">${c.name}</div>
@@ -3953,7 +3953,7 @@ function homePaidTab(tab) {
       paidToday.forEach(c => {
         const initials = c.name.trim().split(/\s+/).map(w=>w[0]).join('').slice(0,2);
         const todayPaid = (c.paid||[]).filter((_,i)=>c.paidDates?.[i]===today).reduce((s,p)=>s+p,0);
-        html += `<div style="display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--border);cursor:pointer" onclick="openClientProfile(this.dataset.n)" data-n="${c.name}">
+        html += `<div style="display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--border);cursor:pointer" onclick="openClientProfilePage(this.dataset.n)" data-n="${c.name}">
           <div style="width:28px;height:28px;border-radius:8px;background:var(--gbg);display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;color:var(--green);flex-shrink:0">${initials}</div>
           <div style="flex:1;text-align:right">
             <div style="font-size:11px;font-weight:600;color:var(--text)">${c.name}</div>
@@ -5776,89 +5776,167 @@ const BR_CAT_BG = {
 
 // ── Render list ───────────────────────────────────────────────
 function renderBore() {
-  const search = (val('br-search')||'').toLowerCase();
-  const fCat   = val('br-cat') || 'all';
-  const fStat  = val('br-status-filter') || 'all';
+  const search  = (val('br-search')||'').toLowerCase();
+  const fCat    = val('br-cat') || 'all';
+  const fStat   = val('br-status-filter') || 'all';
+  const today   = new Date(); today.setHours(0,0,0,0);
+
+  // Priority score function
+  function brScore(b) {
+    if (b.status === 'done') return -1;
+    const remaining = b.remaining !== undefined ? b.remaining : b.amt;
+    let score = 0;
+    // Amount weight (0-40)
+    score += Math.min(40, Math.round(remaining / 500));
+    // Days overdue weight (0-40)
+    if (b.dueDate) {
+      const due = new Date(b.dueDate); due.setHours(0,0,0,0);
+      const overdueDays = Math.floor((today - due) / (1000*60*60*24));
+      if (overdueDays > 0) score += Math.min(40, overdueDays * 2);
+    }
+    // Contact attempts weight (inverse - less contact = higher priority)
+    const contacts = (b.contacts||[]).length;
+    score += Math.max(0, 10 - contacts * 3);
+    return score;
+  }
+
+  // Status classification
+  function brStatus(b) {
+    if (b.status === 'done') return 'done';
+    if (!b.dueDate) return 'active';
+    const due = new Date(b.dueDate); due.setHours(0,0,0,0);
+    const diff = Math.floor((due - today) / (1000*60*60*24));
+    if (diff < 0)  return 'overdue';
+    if (diff <= 7) return 'soon';
+    return 'active';
+  }
 
   const active  = S.bore.filter(b => b.status !== 'done');
   const done    = S.bore.filter(b => b.status === 'done');
-  const total   = active.reduce((s,b) => s + (b.amt||0), 0);
-  const totalAll= S.bore.reduce((s,b) => s + (b.amt||0), 0);
+  const total   = active.reduce((s,b) => s + (b.remaining!==undefined?b.remaining:b.amt||0), 0);
+  const overdue = active.filter(b => brStatus(b)==='overdue').length;
+  const soon    = active.filter(b => brStatus(b)==='soon').length;
 
-  // ── KPI ──────────────────────────────────────────────────
+  // KPI
   setHTML('br-total', `
-    <div style="background:var(--bbg);border:1.5px solid var(--bborder);border-radius:12px;padding:14px;display:flex;align-items:center;gap:14px">
-      <div style="width:44px;height:44px;background:var(--blue);border-radius:12px;display:flex;align-items:center;justify-content:center;flex-shrink:0">
-        <i class="ti ti-arrow-up-circle" style="font-size:22px;color:#fff"></i>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px">
+      <div style="background:var(--bbg);border:1.5px solid var(--bborder);border-radius:12px;padding:14px;display:flex;align-items:center;gap:12px">
+        <div style="width:44px;height:44px;background:var(--blue);border-radius:12px;display:flex;align-items:center;justify-content:center;flex-shrink:0">
+          <i class="ti ti-arrow-up-circle" style="font-size:22px;color:#fff"></i>
+        </div>
+        <div>
+          <div style="font-size:10px;color:var(--blue);font-weight:700">إجمالي فلوس بره</div>
+          <div style="font-size:22px;font-weight:900;color:var(--blue);direction:rtl">${ar(total)} ${_currency}</div>
+          <div style="font-size:10px;color:var(--text3)">${active.length} نشط · ${done.length} منتهي</div>
+        </div>
       </div>
-      <div style="flex:1">
-        <div style="font-size:10px;color:var(--blue);font-weight:700">إجمالي فلوس بره</div>
-        <div style="font-size:24px;font-weight:900;color:var(--blue);direction:rtl">${ar(total)} ${_currency}</div>
-        <div style="font-size:10px;color:var(--text3)">${active.length} بند نشط · ${done.length} منتهي</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
+        <div style="background:${overdue>0?'var(--rbg)':'var(--bg2)'};border:1px solid ${overdue>0?'var(--rborder)':'var(--border)'};border-radius:10px;padding:10px;text-align:center">
+          <div style="font-size:9px;color:var(--text3)">🔴 متأخر</div>
+          <div style="font-size:20px;font-weight:900;color:${overdue>0?'var(--red)':'var(--text3)'}">${overdue}</div>
+        </div>
+        <div style="background:${soon>0?'var(--abg)':'var(--bg2)'};border:1px solid ${soon>0?'var(--aborder)':'var(--border)'};border-radius:10px;padding:10px;text-align:center">
+          <div style="font-size:9px;color:var(--text3)">🟡 قريب</div>
+          <div style="font-size:20px;font-weight:900;color:${soon>0?'var(--amber)':'var(--text3)'}">${soon}</div>
+        </div>
       </div>
-      ${done.length > 0 ? '<div style="text-align:center"><div style="font-size:10px;color:var(--text3)">منتهي</div><div style="font-size:16px;font-weight:800;color:var(--green);direction:rtl">'+ar(done.reduce((s,b)=>s+(b.amt||0),0))+' '+_currency+'</div></div>' : ''}
     </div>
   `);
 
-  // ── Filter ────────────────────────────────────────────────
+  // Filter
   let list = [...S.bore];
   if (fCat  !== 'all') list = list.filter(b => b.cat === fCat);
   if (fStat === 'active') list = list.filter(b => b.status !== 'done');
   else if (fStat === 'done') list = list.filter(b => b.status === 'done');
   if (search) list = list.filter(b => (b.name||'').toLowerCase().includes(search));
-  list.sort((a,b) => (b.date||'') > (a.date||'') ? 1 : -1);
+
+  // Sort by priority score (highest first)
+  list.sort((a, b) => brScore(b) - brScore(a));
 
   if (!list.length) {
     setHTML('br-list', '<div class="empty" style="margin-top:30px"><i class="ti ti-inbox"></i><p>لا توجد بنود</p></div>');
-    _renderBrBulkBar()
+    _renderBrBulkBar();
     return;
   }
 
-  // ── Simple Cards ─────────────────────────────────────────
   const catColors = {
-    'قرض أعطيته': 'var(--blue)',
-    'بضاعة':      'var(--green)',
-    'جمعية':      'var(--purple,#a855f7)',
-    'مصاريف':     'var(--amber)',
-    'أخرى':       'var(--teal)',
+    'قرض أعطيته':'var(--blue)','بضاعة':'var(--green)',
+    'جمعية':'var(--purple,#a855f7)','مصاريف':'var(--amber)','أخرى':'var(--teal)'
   };
+  const statusLabels = { overdue:'🔴 متأخر', soon:'🟡 هيستحق قريباً', active:'🟢 في الوقت', done:'✓ منتهي' };
+  const statusColors = { overdue:'var(--red)', soon:'var(--amber)', active:'var(--green)', done:'var(--green)' };
+
+  const brSel  = window._brBulkSel || new Set();
+  const brMode = window._brBulkMode;
 
   const cards = list.map(b => {
-    const isDone   = b.status === 'done';
-    const sColor   = isDone ? 'var(--green)' : (catColors[b.cat] || 'var(--blue)');
-    const initials = (b.name||'?').trim().split(/\s+/).map(w=>w[0]).join('').slice(0,2).toUpperCase();
-    const brSel = _brBulkSel;
-    const brMode = _brBulkMode;
-    const isBrSel = brSel.has(b.id);
-    return '<div id="brc-'+b.id+'" style="background:'+(isBrSel?'var(--abg)':'var(--bg2)')+';border:1px solid var(--border);border-radius:12px;' +
-           'margin-bottom:8px;padding:14px;display:flex;align-items:center;gap:12px;' +
-           'cursor:pointer;border-right:3px solid '+sColor+';transition:background .15s;' +
-           (isBrSel?'outline:2px solid var(--accent)':'')+'"' +
-           ' onclick="'+(brMode ? 'brSelectItem('+b.id+',event)' : 'openBoreDetail('+b.id+')')+'">' +
-           (brMode ? '<div class="bulk-chk" style="width:20px;height:20px;border-radius:5px;border:2px solid var(--border);flex-shrink:0;background:'+(isBrSel?'var(--accent)':'')+'"></div>' : '') +
-      '<div style="width:42px;height:42px;border-radius:11px;background:'+sColor+'22;' +
-           'color:'+sColor+';display:flex;align-items:center;justify-content:center;' +
-           'font-size:14px;font-weight:900;flex-shrink:0;border:1.5px solid '+sColor+'44">'+initials+'</div>' +
-      '<div style="flex:1;min-width:0">' +
-        '<div style="font-size:14px;font-weight:800;color:var(--text)">'+b.name+'</div>' +
-        '<div style="font-size:11px;color:var(--text3);margin-top:3px">' +
-          (b.cat?'<span style="color:'+sColor+';font-weight:700">'+b.cat+'</span>':'') +
-          (b.date?' · '+fDate(b.date):'') +
-          (isDone?' · <span style="color:var(--green);font-weight:700">✓ منتهي</span>':'') +
-          (b.note?' · '+b.note:'') +
-        '</div>' +
-      '</div>' +
-      '<div style="text-align:center;flex-shrink:0">' +
-        '<div style="font-size:18px;font-weight:900;color:'+sColor+';direction:rtl">'+ar(b.amt||0)+'</div>' +
-        '<div style="font-size:9px;color:var(--text3)">'+_currency+'</div>' +
-      '</div>' +
-      '<i class="ti ti-chevron-left" style="color:var(--text3);font-size:16px;flex-shrink:0"></i>' +
+    const bStat     = brStatus(b);
+    const isDone    = b.status === 'done';
+    const remaining = b.remaining !== undefined ? b.remaining : b.amt;
+    const score     = brScore(b);
+    const sColor    = isDone ? 'var(--green)' : statusColors[bStat] || (catColors[b.cat]||'var(--blue)');
+    const initials  = (b.name||'?').trim().split(/\s+/).map(w=>w[0]).join('').slice(0,2).toUpperCase();
+    const isBrSel   = brSel.has(b.id);
+    const contacts  = (b.contacts||[]).length;
+    const lastContact = b.contacts&&b.contacts.length ? b.contacts[b.contacts.length-1] : null;
+
+    // Days overdue or days until due
+    let dueLabel = '';
+    if (b.dueDate && !isDone) {
+      const due  = new Date(b.dueDate); due.setHours(0,0,0,0);
+      const diff = Math.floor((due - today) / (1000*60*60*24));
+      if (diff < 0)       dueLabel = '<span style="color:var(--red);font-weight:800">متأخر '+(Math.abs(diff))+' يوم</span>';
+      else if (diff === 0) dueLabel = '<span style="color:var(--amber);font-weight:800">⚡ مستحق اليوم!</span>';
+      else if (diff <= 7)  dueLabel = '<span style="color:var(--amber)">📅 بعد '+diff+' يوم</span>';
+    }
+
+    return '<div id="brc-'+b.id+'" style="background:'+(isBrSel?'var(--abg)':'var(--bg2)')+';border:1px solid var(--border);border-radius:12px;'+
+           'margin-bottom:8px;padding:14px;cursor:pointer;'+
+           'border-right:3px solid '+sColor+';transition:background .15s;'+
+           (isBrSel?'outline:2px solid var(--accent)':'')+'"'+
+           ' onclick="'+(brMode?'brSelectItem('+b.id+',event)':'openBoreDetail('+b.id+')')+'">'+
+
+      // Top row
+      '<div style="display:flex;align-items:center;gap:12px">'+
+        (brMode?'<div class="bulk-chk" style="width:20px;height:20px;border-radius:5px;border:2px solid var(--border);flex-shrink:0;background:'+(isBrSel?'var(--accent)':'')+'"></div>':'')+
+        '<div style="width:40px;height:40px;border-radius:10px;background:'+sColor+'22;color:'+sColor+';display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:900;flex-shrink:0;border:1.5px solid '+sColor+'44">'+initials+'</div>'+
+        '<div style="flex:1;min-width:0">'+
+          '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">'+
+            '<span style="font-size:14px;font-weight:800;color:var(--text)">'+b.name+'</span>'+
+            (b.cat?'<span style="font-size:10px;background:'+sColor+'18;color:'+sColor+';padding:1px 6px;border-radius:10px;font-weight:700">'+b.cat+'</span>':'')+
+            (score>30&&!isDone?'<span style="font-size:10px;background:var(--rbg);color:var(--red);padding:1px 6px;border-radius:10px;font-weight:800">🔥 أولوية '+score+'</span>':'')+
+          '</div>'+
+          '<div style="font-size:11px;color:var(--text3);margin-top:3px;display:flex;gap:8px;flex-wrap:wrap">'+
+            (dueLabel||('<span style="color:'+statusColors[bStat]+';font-weight:700">'+statusLabels[bStat]+'</span>'))+
+            (contacts>0?'<span>📞 '+contacts+' تواصل'+(lastContact?' · '+fDate(lastContact.date):'')+'</span>':'')+
+            (b.note?'<span>'+b.note+'</span>':'')+
+          '</div>'+
+        '</div>'+
+        '<div style="text-align:center;flex-shrink:0">'+
+          '<div style="font-size:10px;color:var(--text3)">'+(remaining<b.amt?'متبقي':'المبلغ')+'</div>'+
+          '<div style="font-size:18px;font-weight:900;color:'+sColor+';direction:rtl">'+ar(remaining)+'</div>'+
+          '<div style="font-size:9px;color:var(--text3)">'+_currency+'</div>'+
+        '</div>'+
+        '<i class="ti ti-chevron-left" style="color:var(--text3);font-size:16px;flex-shrink:0"></i>'+
+      '</div>'+
+
+      // Quick action buttons (when not in bulk mode)
+      (!brMode&&!isDone ?
+        '<div style="display:flex;gap:6px;margin-top:10px;padding-top:10px;border-top:1px solid var(--border)" onclick="event.stopPropagation()">'+
+          '<button onclick="brLogContact('+b.id+',1)" style="flex:1;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:6px;cursor:pointer;color:var(--text2);font-size:11px;font-weight:700;font-family:Cairo,sans-serif">📞 اتصلت بيه</button>'+
+          (b.phone?
+            '<a href="https://wa.me/2'+b.phone.replace(/^0/,'')+'" target="_blank" onclick="brLogContact('+b.id+',2)" style="flex:1;background:var(--gbg);border:1px solid var(--gborder);border-radius:8px;padding:6px;cursor:pointer;color:#25D366;font-size:11px;font-weight:700;font-family:Cairo,sans-serif;text-decoration:none;display:flex;align-items:center;justify-content:center">💬 واتساب ↗</a>'
+          :'<button onclick="brLogContact('+b.id+',3)" style="flex:1;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:6px;cursor:pointer;color:var(--text2);font-size:11px;font-weight:700;font-family:Cairo,sans-serif">📝 ملاحظة</button>')+
+        '</div>'
+      :'')+
+
     '</div>';
   });
 
   setHTML('br-list', cards.join(''));
   _renderBrBulkBar();
 }
+
 
 
 // ── Add ───────────────────────────────────────────────────────
@@ -5873,6 +5951,8 @@ function openAddBore(editId) {
     setVal('br-name', b.name||'');
     setVal('br-amt',  b.amt||0);
     setVal('br-cat-add', b.cat||'قرض أعطيته');
+    setVal('br-due-date', b.dueDate||'');
+    setVal('br-phone', b.phone||'');
     setVal('br-date-add', b.date||'');
     setVal('br-note', b.note||'');
     const statusEl = document.getElementById('br-status-add');
@@ -5883,6 +5963,8 @@ function openAddBore(editId) {
     ['br-name','br-note'].forEach(id => setVal(id,''));
     setVal('br-amt', '');
     setVal('br-date-add', todayStr);
+    setVal('br-due-date', '');
+    setVal('br-phone', '');
     setVal('br-cat-add', 'قرض أعطيته');
     const statusEl = document.getElementById('br-status-add');
     if (statusEl) statusEl.value = 'active';
@@ -5898,7 +5980,9 @@ function addBore() {
   const amt    = num('br-amt');
   const cat    = val('br-cat-add') || 'أخرى';
   const date   = val('br-date-add') || todayStr;
-  const note   = val('br-note').trim();
+  const note    = val('br-note').trim();
+  const dueDate = val('br-due-date') || '';
+  const phone   = val('br-phone').trim();
   const status = document.getElementById('br-status-add')?.value || 'active';
 
   if (!name) { toast('اكتب الاسم','error'); return; }
@@ -5909,10 +5993,11 @@ function addBore() {
     if (b) {
       b.name = name; b.amt = amt; b.cat = cat;
       b.date = date; b.note = note; b.status = status;
+      b.dueDate = dueDate; b.phone = phone;
       auditLog('edit','bore',name,ar(amt)+' '+_currency);
     }
   } else {
-    S.bore.push({ id:nid(), name, amt, cat, date, note, status:'active', remaining: amt, payments:[] });
+    S.bore.push({ id:nid(), name, amt, cat, date, note, status:'active', remaining: amt, payments:[], dueDate, phone, contacts:[] });
     auditLog('add','bore',name,ar(amt)+' '+_currency);
   }
 
@@ -5998,6 +6083,29 @@ function openBoreDetail(id) {
     '</div>';
   }).join('') : '<div style="text-align:center;padding:20px;color:var(--text3);font-size:12px"><i class="ti ti-inbox" style="display:block;font-size:22px;margin-bottom:6px"></i>لم تتم أي دفعات بعد</div>';
 
+
+  // ── Contact log ───────────────────────────────────────────
+  const typeLabels  = { call:'📞 اتصال', whatsapp:'💬 واتساب', note:'📝 ملاحظة' };
+  const typeColors  = { call:'var(--blue)', whatsapp:'var(--green)', note:'var(--amber)' };
+  const typeBgs     = { call:'var(--bbg)', whatsapp:'var(--gbg)', note:'var(--abg)' };
+  const contactRows = (b.contacts&&b.contacts.length) ?
+    b.contacts.slice().reverse().map((c, ci) => {
+      const realCi = b.contacts.length - 1 - ci;
+      const lbl = typeLabels[c.type] || c.type;
+      const col = typeColors[c.type] || 'var(--text2)';
+      const bg  = typeBgs[c.type]   || 'var(--bg3)';
+      return '<div style="display:flex;align-items:flex-start;gap:10px;padding:10px 0;border-bottom:1px solid var(--border)">' +
+        '<div style="width:32px;height:32px;border-radius:8px;background:'+bg+';display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:14px">'+lbl.split(' ')[0]+'</div>' +
+        '<div style="flex:1">' +
+          '<div style="font-size:12px;font-weight:700;color:'+col+'">'+lbl+'</div>' +
+          (c.note?'<div style="font-size:12px;color:var(--text);margin-top:2px;background:var(--bg3);padding:6px 8px;border-radius:6px;border-right:2px solid '+col+'">'+c.note+'</div>':'') +
+          '<div style="font-size:10px;color:var(--text3);margin-top:3px">'+fDate(c.date)+'</div>' +
+        '</div>' +
+        '<button onclick="delBoreContact('+b.id+','+realCi+')" style="background:none;border:none;cursor:pointer;color:var(--text3);font-size:11px;padding:2px 6px;font-family:Cairo,sans-serif;flex-shrink:0">حذف</button>' +
+      '</div>';
+    }).join('')
+    : '<div style="text-align:center;padding:16px;color:var(--text3);font-size:12px">لم تتم أي محاولة تواصل بعد</div>';
+
   const el = document.getElementById('pg-br-detail');
   el.innerHTML =
     '<div class="page-header">' +
@@ -6055,6 +6163,18 @@ function openBoreDetail(id) {
     '<div class="card">' +
       '<div class="card-title"><i class="ti ti-history" style="color:var(--teal)"></i> سجل الدفعات ('+b.payments.length+')</div>' +
       '<div>'+payRows+'</div>' +
+    '</div>' +
+
+    '<div class="card">' +
+      '<div class="card-title" style="display:flex;align-items:center;justify-content:space-between">' +
+        '<span><i class="ti ti-messages" style="color:var(--blue)"></i> سجل التواصل ('+(b.contacts&&b.contacts.length?b.contacts.length:0)+')</span>' +
+        '<div style="display:flex;gap:6px">' +
+          '<button onclick="brLogContact('+b.id+',1)" style="background:var(--bbg);border:1px solid var(--bborder);border-radius:6px;padding:4px 8px;cursor:pointer;color:var(--blue);font-size:11px;font-weight:700;font-family:Cairo,sans-serif">📞 اتصلت</button>' +
+          '<button onclick="brLogContact('+b.id+',2)" style="background:var(--gbg);border:1px solid var(--gborder);border-radius:6px;padding:4px 8px;cursor:pointer;color:var(--green);font-size:11px;font-weight:700;font-family:Cairo,sans-serif">💬 واتساب</button>' +
+          '<button onclick="brLogContact('+b.id+',3)" style="background:var(--abg);border:1px solid var(--aborder);border-radius:6px;padding:4px 8px;cursor:pointer;color:var(--amber);font-size:11px;font-weight:700;font-family:Cairo,sans-serif">📝 ملاحظة</button>' +
+        '</div>' +
+      '</div>' +
+      '<div>'+contactRows+'</div>' +
     '</div>';
 
   nav('pg-br-detail');
@@ -8552,7 +8672,7 @@ function globalSearch(q) {
     results.push({
       section: 'aqsat',
       priority: c.name.toLowerCase().startsWith(ql) ? 0 : 1,
-      html: `<div class="search-result-item" onclick="closeSearch();openClientProfile(this.dataset.n)" data-n="${c.name}">
+      html: `<div class="search-result-item" onclick="closeSearch();openClientProfilePage(this.dataset.n)" data-n="${c.name}">
         <div class="search-res-icon" style="background:linear-gradient(135deg,var(--teal),var(--blue))">
           <span style="font-size:12px;font-weight:900;color:#fff">${initials}</span>
         </div>
@@ -8604,7 +8724,7 @@ function globalSearch(q) {
     results.push({
       section: 'bore',
       priority: 3,
-      html: `<div class="search-result-item" onclick="closeSearch();openClientProfile(this.dataset.n)" data-n="${b.name}">
+      html: `<div class="search-result-item" onclick="closeSearch();openClientProfilePage(this.dataset.n)" data-n="${b.name}">
         <div class="search-res-icon" style="background:var(--bbg)">
           <i class="ti ti-arrow-up-circle" style="font-size:18px;color:var(--blue)"></i>
         </div>
@@ -8626,7 +8746,7 @@ function globalSearch(q) {
     results.push({
       section: 'qorod',
       priority: 3,
-      html: `<div class="search-result-item" onclick="closeSearch();openClientProfile(this.dataset.n)" data-n="${q2.name}">
+      html: `<div class="search-result-item" onclick="closeSearch();openClientProfilePage(this.dataset.n)" data-n="${q2.name}">
         <div class="search-res-icon" style="background:var(--rbg)">
           <i class="ti ti-coins" style="font-size:18px;color:var(--red)"></i>
         </div>
@@ -8648,7 +8768,7 @@ function globalSearch(q) {
     results.push({
       section: 'doyon',
       priority: 3,
-      html: `<div class="search-result-item" onclick="closeSearch();openClientProfile(this.dataset.n)" data-n="${d.name}">
+      html: `<div class="search-result-item" onclick="closeSearch();openClientProfilePage(this.dataset.n)" data-n="${d.name}">
         <div class="search-res-icon" style="background:var(--abg)">
           <i class="ti ti-receipt" style="font-size:18px;color:var(--amber)"></i>
         </div>
@@ -11239,6 +11359,259 @@ function waBore(boreId) {
   window.open('https://wa.me/' + phone + '?text=' + msg, '_blank');
 }
 
+
+// ── Log contact attempt ───────────────────────────────────────
+function brLogContact(boreId, typeCode, skipNote) {
+  const b = S.bore.find(x => x.id === boreId);
+  if (!b) return;
+  if (!b.contacts) b.contacts = [];
+  const typeMap  = { 1:'call', 2:'whatsapp', 3:'note' };
+  const type     = typeMap[typeCode] || String(typeCode);
+  const labels   = { call:'📞 اتصال', whatsapp:'💬 واتساب', note:'📝 ملاحظة' };
+  const label    = labels[type] || type;
+
+  // Open note modal
+  const existing = document.getElementById('br-contact-modal');
+  if (existing) existing.remove();
+
+  const modal = document.createElement('div');
+  modal.id = 'br-contact-modal';
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px;direction:rtl';
+  modal.innerHTML =
+    '<div style="background:var(--bg2);border:1px solid var(--border2);border-radius:12px;padding:20px;width:100%;max-width:380px;font-family:Cairo,sans-serif">' +
+      '<div style="font-size:15px;font-weight:800;color:var(--text);margin-bottom:14px">' + label + ' — ' + b.name + '</div>' +
+      '<div style="font-size:12px;color:var(--text3);margin-bottom:8px">ملاحظة (اختياري)</div>' +
+      '<textarea id="br-contact-note" placeholder="مثال: قال هيدفع الجمعة..." style="width:100%;box-sizing:border-box;background:var(--bg3);border:1px solid var(--border2);border-radius:8px;padding:10px;color:var(--text);font-family:Cairo,sans-serif;font-size:13px;resize:none;height:80px;outline:none;margin-bottom:12px"></textarea>' +
+      '<div style="display:flex;gap:8px">' +
+        '<button onclick="brSaveContact(' + boreId + ',' + typeCode + ')" style="flex:1;background:var(--accent);color:#fff;border:none;border-radius:8px;padding:10px;font-weight:800;font-size:13px;cursor:pointer;font-family:Cairo,sans-serif">✓ حفظ</button>' +
+        '<button onclick="closeBrContactModal()" style="background:var(--bg3);color:var(--text2);border:1px solid var(--border);border-radius:8px;padding:10px 14px;font-size:13px;cursor:pointer;font-family:Cairo,sans-serif">إلغاء</button>' +
+      '</div>' +
+    '</div>';
+  document.body.appendChild(modal);
+  setTimeout(() => document.getElementById('br-contact-note')?.focus(), 100);
+}
+
+function brSaveContact(boreId, typeCode) {
+  const b = S.bore.find(x => x.id === boreId);
+  if (!b) return;
+  if (!b.contacts) b.contacts = [];
+  const typeMap = { 1:'call', 2:'whatsapp', 3:'note' };
+  const type    = typeMap[typeCode] || String(typeCode);
+  const note    = (document.getElementById('br-contact-note')?.value || '').trim();
+  b.contacts.push({ date: todayStr, type, note });
+  saveData();
+  document.getElementById('br-contact-modal')?.remove();
+  // Refresh detail if open
+  const onDetail = document.getElementById('pg-br-detail')?.classList.contains('active');
+  if (onDetail) openBoreDetail(boreId); else renderBore();
+  const labels = { call:'اتصال', whatsapp:'واتساب', note:'ملاحظة' };
+  toast('✓ تم تسجيل ' + (labels[type]||type) + ' مع ' + b.name);
+}
+
+
+// ── Delete contact log entry ──────────────────────────────────
+function delBoreContact(boreId, contactIdx) {
+  const b = S.bore.find(x => x.id === boreId);
+  if (!b || !b.contacts || !b.contacts[contactIdx]) return;
+  confirm2('حذف سجل التواصل؟', '', () => {
+    b.contacts.splice(contactIdx, 1);
+    saveData();
+    openBoreDetail(boreId);
+    toast('✓ تم الحذف', 'warn');
+  });
+}
+
+function closeBrContactModal() { document.getElementById("br-contact-modal")?.remove(); }
+
+// ══ CLIENT PROFILE — Full Page Version ═══════════════════════
+function openClientProfilePage(name) {
+  if (!name) return;
+  const nameLower = name.toLowerCase();
+
+  const aqsatMatches = S.aqsat.filter(c => c.name.toLowerCase() === nameLower);
+  const dailyMatches = S.daily.filter(e => (e.name||'').toLowerCase() === nameLower).sort((a,b)=>b.date.localeCompare(a.date));
+  const boreMatches  = S.bore.filter(b => (b.name||'').toLowerCase() === nameLower);
+  const qorodMatches = S.qorod.filter(q => (q.name||'').toLowerCase() === nameLower);
+  const doyonMatches = S.doyon.filter(d => (d.name||'').toLowerCase() === nameLower);
+
+  const hasData = aqsatMatches.length||dailyMatches.length||boreMatches.length||qorodMatches.length||doyonMatches.length;
+  if (!hasData) { toast('مفيش بيانات لهذا العميل', 'warn'); return; }
+
+  const initials = name.trim().split(/\s+/).map(w=>w[0]).join('').slice(0,2).toUpperCase();
+  const phone    = aqsatMatches[0]?.phone || qorodMatches[0]?.phone || doyonMatches[0]?.phone || '';
+
+  // Header
+  const avatarEl = document.getElementById('cp-avatar-pg');
+  const nameEl   = document.getElementById('cp-name-pg');
+  const phoneEl  = document.getElementById('cp-phone-pg');
+  if (avatarEl) avatarEl.textContent = initials;
+  if (nameEl)   nameEl.textContent   = name;
+  if (phoneEl)  phoneEl.innerHTML    = phone ? '<i class="ti ti-phone" style="margin-left:4px"></i>'+phone : '';
+
+  // Back button — track where we came from
+  const backBtn = document.getElementById('cp-back-btn');
+  if (backBtn) {
+    const activePg = document.querySelector('.page.active');
+    const prevPage = activePg ? activePg.id : 'pg-today';
+    backBtn.setAttribute('onclick', "nav('"+prevPage+"')");
+  }
+
+  // Summary KPIs
+  const totalOwedMe = qorodMatches.reduce((s,q)=>s+q.remaining,0) + boreMatches.filter(b=>b.status!=='done').reduce((s,b)=>s+(b.remaining!==undefined?b.remaining:b.amt),0);
+  const totalIOwe   = doyonMatches.reduce((s,d)=>s+d.remaining,0);
+  const totalAq     = aqsatMatches.reduce((s,c)=>s+aqRem(c),0);
+
+  setHTML('cp-summary-pg',
+    '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:4px">' +
+    (totalOwedMe>0?'<div style="background:var(--gbg);border:1px solid var(--gborder);border-radius:10px;padding:10px;text-align:center"><div style="font-size:9px;color:var(--green);margin-bottom:2px;font-weight:700">ليك عنده</div><div style="font-size:15px;font-weight:900;color:var(--green);direction:rtl">'+ar(totalOwedMe)+' '+_currency+'</div></div>':'') +
+    (totalIOwe>0? '<div style="background:var(--rbg);border:1px solid var(--rborder);border-radius:10px;padding:10px;text-align:center"><div style="font-size:9px;color:var(--red);margin-bottom:2px;font-weight:700">عليك ليه</div><div style="font-size:15px;font-weight:900;color:var(--red);direction:rtl">'+ar(totalIOwe)+' '+_currency+'</div></div>':'') +
+    (totalAq>0?   '<div style="background:var(--tbg);border:1px solid var(--tborder);border-radius:10px;padding:10px;text-align:center"><div style="font-size:9px;color:var(--teal);margin-bottom:2px;font-weight:700">أقساط متبقية</div><div style="font-size:15px;font-weight:900;color:var(--teal);direction:rtl">'+ar(totalAq)+' '+_currency+'</div></div>':'') +
+    '</div>'
+  );
+
+  // Chips
+  let chips = '';
+  if (aqsatMatches.length)  chips += '<span style="background:rgba(0,212,200,.15);color:var(--teal);border:1px solid var(--tborder);border-radius:20px;padding:3px 10px;font-size:10px;font-weight:700">'+aqsatMatches.length+' أقساط</span>';
+  if (qorodMatches.length)  chips += '<span style="background:var(--gbg);color:var(--green);border:1px solid var(--gborder);border-radius:20px;padding:3px 10px;font-size:10px;font-weight:700">'+qorodMatches.length+' قروض</span>';
+  if (doyonMatches.length)  chips += '<span style="background:var(--abg);color:var(--amber);border:1px solid var(--aborder);border-radius:20px;padding:3px 10px;font-size:10px;font-weight:700">'+doyonMatches.length+' ديون</span>';
+  if (boreMatches.length)   chips += '<span style="background:var(--bbg);color:var(--blue);border:1px solid var(--bborder);border-radius:20px;padding:3px 10px;font-size:10px;font-weight:700">'+boreMatches.length+' فلوس بره</span>';
+  setHTML('cp-chips-pg', chips);
+
+  // Tabs
+  const tabs = [];
+  if (aqsatMatches.length)  tabs.push({id:'aqsat', label:'الأقساط',   color:'var(--teal)',  icon:'ti-calendar-repeat'});
+  if (qorodMatches.length)  tabs.push({id:'qorod', label:'القروض',    color:'var(--green)', icon:'ti-coins'});
+  if (doyonMatches.length)  tabs.push({id:'doyon', label:'الديون',    color:'var(--amber)', icon:'ti-receipt'});
+  if (boreMatches.length)   tabs.push({id:'bore',  label:'فلوس بره',  color:'var(--blue)',  icon:'ti-arrow-up-circle'});
+  if (dailyMatches.length)  tabs.push({id:'daily', label:'اليومية',   color:'var(--purple,#a855f7)', icon:'ti-file-invoice'});
+
+  setHTML('cp-tabs-pg', tabs.map((t,i) =>
+    '<button onclick="cpShowTabPg(this.dataset.tab)" id="cppg-tab-'+t.id+'" '+
+    'style="flex:1;min-width:70px;padding:10px 8px;font-size:11px;font-weight:700;'+
+    'background:none;border:none;border-bottom:2px solid '+(i===0?t.color:'transparent')+';'+
+    'color:'+(i===0?t.color:'var(--text3)')+';cursor:pointer;font-family:Cairo,sans-serif;'+
+    'white-space:nowrap;transition:all .15s">'+
+    '<i class="ti '+t.icon+'" style="margin-left:4px"></i>'+t.label+'</button>'
+  ).join(''));
+
+  // Store data
+  window._cpDataPg = { aqsatMatches, dailyMatches, boreMatches, qorodMatches, doyonMatches, tabs };
+
+  if (tabs.length) cpShowTabPg(tabs[0].id);
+
+  nav('pg-client-profile');
+}
+
+function cpShowTabPg(tabId) {
+  const { aqsatMatches, dailyMatches, boreMatches, qorodMatches, doyonMatches, tabs } = window._cpDataPg || {};
+  if (!tabs) return;
+
+  // Update tab styles
+  tabs.forEach(t => {
+    const btn = document.getElementById('cppg-tab-'+t.id);
+    if (!btn) return;
+    btn.style.borderBottomColor = t.id===tabId ? t.color : 'transparent';
+    btn.style.color = t.id===tabId ? t.color : 'var(--text3)';
+  });
+
+  let html = '';
+
+  if (tabId === 'aqsat') {
+    aqsatMatches.forEach(c => {
+      const rem = aqRem(c), gross = aqGross(c), paid = gross-rem;
+      const pct = gross>0?Math.round(paid/gross*100):0;
+      const done = aqDone(c), late = aqLate(c);
+      const sc = done?'var(--green)':late?'var(--red)':'var(--teal)';
+      html += '<div style="background:var(--bg3);border-radius:10px;padding:14px;margin-bottom:10px;border:1px solid var(--border);border-right:3px solid '+sc+'">' +
+        '<div style="display:flex;justify-content:space-between;margin-bottom:8px">' +
+          '<span style="font-size:13px;font-weight:800;color:var(--text)">'+(c.item||'قسط')+'</span>' +
+          '<span style="font-size:11px;background:'+sc+'22;color:'+sc+';padding:2px 8px;border-radius:20px;font-weight:700">'+(done?'✓ مكتمل':late?'⚠ متأخر':'نشط')+'</span>' +
+        '</div>' +
+        '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:10px">' +
+          '<div style="text-align:center;background:var(--bg2);border-radius:6px;padding:8px"><div style="font-size:9px;color:var(--text3)">الإجمالي</div><div style="font-size:13px;font-weight:800;direction:rtl">'+ar(gross)+' '+_currency+'</div></div>' +
+          '<div style="text-align:center;background:var(--gbg);border-radius:6px;padding:8px"><div style="font-size:9px;color:var(--green)">تم دفعه</div><div style="font-size:13px;font-weight:800;color:var(--green);direction:rtl">'+ar(paid)+' '+_currency+'</div></div>' +
+          '<div style="text-align:center;background:'+(rem>0?'var(--rbg)':'var(--gbg)')+';border-radius:6px;padding:8px"><div style="font-size:9px;color:'+(rem>0?'var(--red)':'var(--green)')+'">متبقي</div><div style="font-size:13px;font-weight:800;color:'+(rem>0?'var(--red)':'var(--green)')+';direction:rtl">'+ar(rem)+' '+_currency+'</div></div>' +
+        '</div>' +
+        '<div style="background:var(--bg4);border-radius:4px;height:4px;overflow:hidden"><div style="height:100%;width:'+pct+'%;background:'+sc+';border-radius:4px"></div></div>' +
+        '<div style="text-align:left;font-size:10px;color:var(--text3);margin-top:4px">'+pct+'% مسدد</div>' +
+        '<button onclick="closeSearch&&closeSearch();openClientDetail('+c.id+')" style="width:100%;margin-top:10px;background:'+sc+'18;border:1px solid '+sc+'44;border-radius:8px;padding:7px;color:'+sc+';font-size:11px;font-weight:700;cursor:pointer;font-family:Cairo,sans-serif">فتح صفحة العميل ←</button>' +
+      '</div>';
+    });
+  }
+
+  else if (tabId === 'qorod') {
+    qorodMatches.forEach(q => {
+      const late = qrIsLate(q), done = q.status==='done';
+      const sc = done?'var(--green)':late?'var(--red)':'var(--blue)';
+      html += '<div style="background:var(--bg3);border-radius:10px;padding:14px;margin-bottom:10px;border:1px solid var(--border);border-right:3px solid '+sc+'">' +
+        '<div style="display:flex;justify-content:space-between;margin-bottom:8px">' +
+          '<span style="font-size:13px;font-weight:800;color:var(--text)">قرض</span>' +
+          '<span style="font-size:11px;background:'+sc+'22;color:'+sc+';padding:2px 8px;border-radius:20px;font-weight:700">'+(done?'✓ منتهي':late?'⚠ متأخر':'نشط')+'</span>' +
+        '</div>' +
+        '<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:8px">' +
+          '<div style="text-align:center;background:var(--bg2);border-radius:6px;padding:8px"><div style="font-size:9px;color:var(--text3)">الأصل</div><div style="font-size:13px;font-weight:800;direction:rtl">'+ar(q.original)+' '+_currency+'</div></div>' +
+          '<div style="text-align:center;background:'+(q.remaining>0?'var(--rbg)':'var(--gbg)')+';border-radius:6px;padding:8px"><div style="font-size:9px;color:'+(q.remaining>0?'var(--red)':'var(--green)')+'">متبقي</div><div style="font-size:13px;font-weight:800;color:'+(q.remaining>0?'var(--red)':'var(--green)')+';direction:rtl">'+ar(q.remaining)+' '+_currency+'</div></div>' +
+        '</div>' +
+        (q.monthlyInt?'<div style="font-size:11px;color:var(--text3);margin-bottom:8px">فايدة شهرية: <b style="color:var(--purple,#a855f7)">'+ar(q.monthlyInt)+' '+_currency+'</b></div>':'') +
+        '<button onclick="openQrDetailPage('+q.id+')" style="width:100%;background:'+sc+'18;border:1px solid '+sc+'44;border-radius:8px;padding:7px;color:'+sc+';font-size:11px;font-weight:700;cursor:pointer;font-family:Cairo,sans-serif">فتح صفحة القرض ←</button>' +
+      '</div>';
+    });
+  }
+
+  else if (tabId === 'doyon') {
+    doyonMatches.forEach(d => {
+      const late = dyIsLate(d), done = d.status==='done';
+      const sc = done?'var(--green)':late?'var(--red)':'var(--amber)';
+      html += '<div style="background:var(--bg3);border-radius:10px;padding:14px;margin-bottom:10px;border:1px solid var(--border);border-right:3px solid '+sc+'">' +
+        '<div style="display:flex;justify-content:space-between;margin-bottom:8px">' +
+          '<span style="font-size:13px;font-weight:800;color:var(--text)">دين</span>' +
+          '<span style="font-size:11px;background:'+sc+'22;color:'+sc+';padding:2px 8px;border-radius:20px;font-weight:700">'+(done?'✓ منتهي':late?'⚠ متأخر':'نشط')+'</span>' +
+        '</div>' +
+        '<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:8px">' +
+          '<div style="text-align:center;background:var(--bg2);border-radius:6px;padding:8px"><div style="font-size:9px;color:var(--text3)">الأصل</div><div style="font-size:13px;font-weight:800;direction:rtl">'+ar(d.original||d.remaining)+' '+_currency+'</div></div>' +
+          '<div style="text-align:center;background:'+(d.remaining>0?'var(--abg)':'var(--gbg)')+';border-radius:6px;padding:8px"><div style="font-size:9px;color:'+(d.remaining>0?'var(--amber)':'var(--green)')+'">متبقي</div><div style="font-size:13px;font-weight:800;color:'+(d.remaining>0?'var(--amber)':'var(--green)')+';direction:rtl">'+ar(d.remaining)+' '+_currency+'</div></div>' +
+        '</div>' +
+        '<button onclick="openDyDetail('+d.id+')" style="width:100%;background:'+sc+'18;border:1px solid '+sc+'44;border-radius:8px;padding:7px;color:'+sc+';font-size:11px;font-weight:700;cursor:pointer;font-family:Cairo,sans-serif">فتح صفحة الدين ←</button>' +
+      '</div>';
+    });
+  }
+
+  else if (tabId === 'bore') {
+    boreMatches.forEach(b => {
+      const done = b.status==='done';
+      const rem  = b.remaining!==undefined?b.remaining:b.amt;
+      const sc   = done?'var(--green)':'var(--blue)';
+      html += '<div style="background:var(--bg3);border-radius:10px;padding:14px;margin-bottom:10px;border:1px solid var(--border);border-right:3px solid '+sc+'">' +
+        '<div style="display:flex;justify-content:space-between;margin-bottom:8px">' +
+          '<span style="font-size:13px;font-weight:800;color:var(--text)">'+(b.cat||'فلوس بره')+'</span>' +
+          '<span style="font-size:11px;background:'+sc+'22;color:'+sc+';padding:2px 8px;border-radius:20px;font-weight:700">'+(done?'✓ منتهي':'نشط')+'</span>' +
+        '</div>' +
+        '<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:8px">' +
+          '<div style="text-align:center;background:var(--bg2);border-radius:6px;padding:8px"><div style="font-size:9px;color:var(--text3)">المبلغ</div><div style="font-size:13px;font-weight:800;direction:rtl">'+ar(b.amt)+' '+_currency+'</div></div>' +
+          '<div style="text-align:center;background:'+(rem>0?'var(--bbg)':'var(--gbg)')+';border-radius:6px;padding:8px"><div style="font-size:9px;color:'+(rem>0?'var(--blue)':'var(--green)')+'">متبقي</div><div style="font-size:13px;font-weight:800;color:'+(rem>0?'var(--blue)':'var(--green)')+';direction:rtl">'+ar(rem)+' '+_currency+'</div></div>' +
+        '</div>' +
+        (b.dueDate?'<div style="font-size:11px;color:var(--text3);margin-bottom:8px">موعد السداد: <b>'+fDate(b.dueDate)+'</b></div>':'') +
+        '<button onclick="openBoreDetail('+b.id+')" style="width:100%;background:'+sc+'18;border:1px solid '+sc+'44;border-radius:8px;padding:7px;color:'+sc+';font-size:11px;font-weight:700;cursor:pointer;font-family:Cairo,sans-serif">فتح التفاصيل ←</button>' +
+      '</div>';
+    });
+  }
+
+  else if (tabId === 'daily') {
+    dailyMatches.slice(0,20).forEach(e => {
+      html += '<div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--border)">' +
+        '<div style="width:8px;height:8px;border-radius:50%;background:'+(e.type==='in'?'var(--green)':'var(--red)')+';flex-shrink:0"></div>' +
+        '<div style="flex:1;font-size:12px;color:var(--text)">'+(e.name||'حركة')+'</div>' +
+        '<div style="font-size:12px;font-weight:800;color:'+(e.type==='in'?'var(--green)':'var(--red)')+';direction:rtl">'+(e.type==='in'?'+':'-')+ar(e.amt)+' '+_currency+'</div>' +
+        '<div style="font-size:10px;color:var(--text3);margin-right:8px">'+fDate(e.date)+'</div>' +
+      '</div>';
+    });
+    if (!html) html = '<div style="text-align:center;padding:20px;color:var(--text3)">لا توجد حركات</div>';
+  }
+
+  if (!html) html = '<div style="text-align:center;padding:30px;color:var(--text3)"><i class="ti ti-inbox" style="font-size:32px;display:block;margin-bottom:8px"></i>لا توجد بيانات</div>';
+  setHTML('cp-content-pg', html);
+}
+
 </script>
 
 <!-- ── FAB Quick Add ──────────────────────────────────────── -->
@@ -11585,6 +11958,25 @@ function waBore(boreId) {
     <i class="ti ti-dots"></i><span>المزيد</span>
   </button>
 </nav>
+
+<!-- ══ CLIENT PROFILE PAGE ══════════════════════════════════ -->
+<div class="page" id="pg-client-profile">
+  <div class="page-header">
+    <button class="btn btn-ghost btn-sm" id="cp-back-btn" onclick="nav('pg-today')">
+      <i class="ti ti-arrow-right"></i> رجوع
+    </button>
+    <div style="display:flex;align-items:center;gap:10px;flex:1;justify-content:center">
+      <div id="cp-avatar-pg" style="width:36px;height:36px;border-radius:10px;background:linear-gradient(135deg,var(--teal),var(--blue));display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:900;color:#fff"></div>
+      <div id="cp-name-pg" style="font-size:16px;font-weight:900;color:var(--text)"></div>
+    </div>
+    <div id="cp-phone-pg" style="font-size:12px;color:var(--text3)"></div>
+  </div>
+  <div id="cp-summary-pg" style="margin-bottom:12px"></div>
+  <div id="cp-chips-pg" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;padding:0 4px"></div>
+  <div id="cp-tabs-pg" style="display:flex;border-bottom:1px solid var(--border);margin-bottom:14px;overflow-x:auto"></div>
+  <div id="cp-content-pg"></div>
+</div>
+
 </div><!-- /main-area -->
 </div><!-- /app-layout -->
 
@@ -11656,8 +12048,16 @@ function waBore(boreId) {
         <input type="number" id="br-amt" placeholder="0" inputmode="numeric" style="font-size:18px;font-weight:800;text-align:center">
       </div>
       <div class="fg" style="margin:0">
-        <label>التاريخ</label>
+        <label>تاريخ الإعطاء</label>
         <input type="date" id="br-date-add">
+      </div>
+      <div class="fg" style="margin:0">
+        <label>📅 موعد السداد</label>
+        <input type="date" id="br-due-date" style="border-color:var(--aborder)">
+      </div>
+      <div class="fg" style="margin:0">
+        <label>التليفون</label>
+        <input id="br-phone" placeholder="01xxxxxxxxx" inputmode="tel">
       </div>
       <div class="fg" style="margin:0">
         <label>الفئة</label>
